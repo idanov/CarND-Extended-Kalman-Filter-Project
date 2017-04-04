@@ -9,6 +9,9 @@ using Eigen::MatrixXd;
 using Eigen::VectorXd;
 using std::vector;
 
+auto crop = [](float x, float lower){ return fabs(x) > fabs(lower) ? x : lower; };
+float lim = 1e-2;
+
 /*
  * Constructor.
  */
@@ -32,19 +35,23 @@ FusionEKF::FusionEKF() {
                  0, 0.0009,    0,
                  0,      0, 0.09;
 
-	// initial state covariance matrix P
-	MatrixXd P = MatrixXd(4, 4);
-	P << 1000, 0, 0, 0,
-			 0, 1000, 0, 0,
-			 0, 0, 1000, 0,
-			 0, 0, 0, 1000;
+  // laser measurement matrix
+  H_laser_ << 1, 0, 0, 0,
+              0, 1, 0, 0;
+
+  // initial state covariance matrix P
+  MatrixXd P = MatrixXd(4, 4);
+  P << 1, 0, 0, 0,
+       0, 1, 0, 0,
+       0, 0, 1, 0,
+       0, 0, 0, 1;
 
   // the initial transition matrix F
   MatrixXd F = MatrixXd(4, 4);
-	F << 1, 0, 1, 0,
-			 0, 1, 0, 1,
-			 0, 0, 1, 0,
-			 0, 0, 0, 1;
+  F << 1, 0, 1, 0,
+       0, 1, 0, 1,
+       0, 0, 1, 0,
+       0, 0, 0, 1;
 
   // initial process covariance matrix Q
   MatrixXd Q = MatrixXd(4, 4);
@@ -73,7 +80,6 @@ FusionEKF::~FusionEKF() {}
 
 void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
 
-
   /*****************************************************************************
    *  Initialization
    ****************************************************************************/
@@ -81,7 +87,7 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
     // first measurement
     cout << "EKF: " << endl;
     ekf_.x_ = VectorXd(4);
-    ekf_.x_ << 1, 1, 1, 1;
+    ekf_.x_ << 0, 0, 0, 0;
 
     if (measurement_pack.sensor_type_ == MeasurementPackage::RADAR) {
       // get measurements from Radar
@@ -94,30 +100,22 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
       float sin_phi = sin(phi);
 
       // convert from polar to cartesian coordinates
-      float px = rho * cos_phi;
-      float py = -rho * sin_phi;
+      float px = crop(rho * cos_phi, lim);
+      float py = crop(-rho * sin_phi, lim);
       float vx = rho_dot * cos_phi;
       float vy = -rho_dot * sin_phi;
 
       // initialize state
       ekf_.x_ << px, py, vx, vy;
-      // initialize covarience matrix
-      ekf_.P_(0,0) = 1;
-      ekf_.P_(1,1) = 1;
-      ekf_.P_(2,2) = 1;
-      ekf_.P_(3,3) = 1;
       // set initial timestamp
       previous_timestamp_ = measurement_pack.timestamp_;
     }
     else if (measurement_pack.sensor_type_ == MeasurementPackage::LASER) {
       // initialize position state wiht Lidar measurements
-      ekf_.x_(0) = measurement_pack.raw_measurements_(0);
-      ekf_.x_(1) = measurement_pack.raw_measurements_(1);
-      // initialize covarience matrix
-      ekf_.P_(0,0) = 1;
-      ekf_.P_(1,1) = 1;
-      ekf_.P_(2,2) = 1000;
-      ekf_.P_(3,3) = 1000;
+      float px = crop(measurement_pack.raw_measurements_(0), lim);
+      float py = crop(measurement_pack.raw_measurements_(1), lim);
+
+      ekf_.x_ << px, py, 0, 0;
       // set initial timestamp
       previous_timestamp_ = measurement_pack.timestamp_;
     }
@@ -131,24 +129,27 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
    *  Prediction
    ****************************************************************************/
 
-	// compute the time elapsed between the current and previous measurements
-	float dt = (measurement_pack.timestamp_ - previous_timestamp_) / 1000000.0;	// dt - expressed in seconds
-	previous_timestamp_ = measurement_pack.timestamp_;
+  // compute the time elapsed between the current and previous measurements
+  float dt = (measurement_pack.timestamp_ - previous_timestamp_) / 1000000.0;	// dt - expressed in seconds
+  previous_timestamp_ = measurement_pack.timestamp_;
 
-	float dt_2 = dt * dt;
-	float dt_3 = dt_2 * dt;
-	float dt_4 = dt_3 * dt;
+  // make sure dt is not 0
+  dt = crop(dt, lim * lim);
 
-	// update the state transition matrix F according to the new elapsed time
-	ekf_.F_(0, 2) = dt;
-	ekf_.F_(1, 3) = dt;
+  float dt_2 = dt * dt;
+  float dt_3 = dt_2 * dt;
+  float dt_4 = dt_3 * dt;
 
-	// update the process noise covariance matrix.
-	ekf_.Q_ = MatrixXd(4, 4);
-	ekf_.Q_ << dt_4/4*noise_ax,               0, dt_3/2*noise_ax,               0,
-			                     0, dt_4/4*noise_ay,               0, dt_3/2*noise_ay,
-			       dt_3/2*noise_ax,               0,   dt_2*noise_ax,               0,
-			                     0, dt_3/2*noise_ay,               0,   dt_2*noise_ay;
+  // update the state transition matrix F according to the new elapsed time
+  ekf_.F_(0, 2) = dt;
+  ekf_.F_(1, 3) = dt;
+
+  // update the process noise covariance matrix.
+  ekf_.Q_ = MatrixXd(4, 4);
+  ekf_.Q_ << dt_4/4*noise_ax,               0, dt_3/2*noise_ax,               0,
+                           0, dt_4/4*noise_ay,               0, dt_3/2*noise_ay,
+             dt_3/2*noise_ax,               0,   dt_2*noise_ax,               0,
+                           0, dt_3/2*noise_ay,               0,   dt_2*noise_ay;
 
   ekf_.Predict();
 
